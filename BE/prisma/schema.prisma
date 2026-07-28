@@ -1,0 +1,590 @@
+// =============================================================================
+// Practicum Management System — Database Schema
+// =============================================================================
+// This is the single source of truth for the database structure.
+// Run `bunx prisma migrate dev` to apply changes.
+// Run `bunx prisma generate` to regenerate the Prisma client.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserRole {
+  SYSTEM_ADMIN
+  LAB_ADMIN
+  ASSISTANT
+  STUDENT
+}
+
+enum Semester {
+  ODD
+  EVEN
+}
+
+enum SessionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+enum AssignmentType {
+  LAB_REPORT
+  FINAL_REPORT
+  COMPREHENSIVE_REPORT
+  PROJECT
+  QUIZ
+  OTHER
+}
+
+enum SubmissionStatus {
+  DRAFT
+  SUBMITTED
+  LATE
+  UNDER_REVIEW
+  REVISION_REQUESTED
+  ACCEPTED
+  REJECTED
+}
+
+enum AggregationMethod {
+  AVERAGE
+  SUM
+  HIGHEST
+  LATEST
+}
+
+enum LatePenaltyUnit {
+  PER_HOUR
+  PER_DAY
+  FLAT
+}
+
+enum NotificationType {
+  ANNOUNCEMENT
+  GRADE
+  DEADLINE
+  SUBMISSION
+  SYSTEM
+}
+
+enum AnnouncementPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  DROPPED
+  COMPLETED
+}
+
+// =============================================================================
+// MODELS
+// =============================================================================
+
+/// Core user model for all roles (Admin, Lab Admin, Assistant, Student)
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  email        String?
+  passwordHash String   @map("password_hash")
+  fullName     String   @map("full_name")
+  nim          String?  @unique // Student ID number. Null for non-students.
+  phone        String?
+  avatarUrl    String?  @map("avatar_url")
+  role         UserRole
+  isActive     Boolean  @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  refreshTokens        RefreshToken[]
+  adminOfLaboratories  Laboratory[]         @relation("LabAdmin")
+  studentEnrollments   StudentEnrollment[]  @relation("StudentEnrollment")
+  assistantAssignments AssistantAssignment[] @relation("AssistantAssignment")
+  gradedGrades         Grade[]              @relation("GradedBy")
+  recordedAttendances  Attendance[]         @relation("RecordedBy")
+  reviewedSubmissions  Submission[]         @relation("ReviewedBy")
+  uploadedVersions     SubmissionVersion[]  @relation("UploadedBy")
+  uploadedMaterials    SessionMaterial[]    @relation("MaterialUploader")
+  publishedAnnouncements Announcement[]     @relation("AnnouncementPublisher")
+  publishedGrades      PublishedGrade[]     @relation("GradePublisher")
+  notifications        Notification[]
+  auditLogs            AuditLog[]
+  updatedSettings      SystemSetting[]      @relation("SettingUpdater")
+
+  @@index([username])
+  @@index([role])
+  @@index([isActive])
+  @@map("users")
+}
+
+/// Stores hashed refresh tokens for JWT authentication
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// Physical or logical laboratory unit
+model Laboratory {
+  id          String  @id @default(uuid())
+  name        String
+  code        String  @unique
+  description String?
+  adminId     String? @map("admin_id")
+  isActive    Boolean @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  admin         User?          @relation("LabAdmin", fields: [adminId], references: [id], onDelete: SetNull)
+  practicums    Practicum[]
+  announcements Announcement[] @relation("LabAnnouncement")
+
+  @@index([adminId])
+  @@map("laboratories")
+}
+
+/// A practicum course offered by a laboratory in a specific academic period
+model Practicum {
+  id            String   @id @default(uuid())
+  laboratoryId  String   @map("laboratory_id")
+  name          String
+  code          String
+  description   String?
+  academicYear  String   @map("academic_year") // e.g., "2026/2027"
+  semester      Semester
+  totalSessions Int      @default(14) @map("total_sessions")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  laboratory        Laboratory         @relation(fields: [laboratoryId], references: [id], onDelete: Restrict)
+  classes           PracticumClass[]
+  gradingComponents GradingComponent[]
+  gradeLetters      GradeLetterMapping[]
+  assignments       Assignment[]
+  announcements     Announcement[]     @relation("PracticumAnnouncement")
+
+  @@unique([code, academicYear, semester])
+  @@index([laboratoryId])
+  @@map("practicums")
+}
+
+/// A class/section/group within a practicum (e.g., "Group A", "Shift 1")
+model PracticumClass {
+  id           String  @id @default(uuid())
+  practicumId  String  @map("practicum_id")
+  name         String  // e.g., "Group A"
+  scheduleDay  String? @map("schedule_day")
+  scheduleTime String? @map("schedule_time")
+  room         String?
+  maxStudents  Int?    @map("max_students")
+  isActive     Boolean @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  practicum            Practicum            @relation(fields: [practicumId], references: [id], onDelete: Cascade)
+  sessions             Session[]
+  studentEnrollments   StudentEnrollment[]
+  assistantAssignments AssistantAssignment[]
+
+  @@unique([practicumId, name])
+  @@index([practicumId])
+  @@map("practicum_classes")
+}
+
+/// A single meeting/session within a class
+model Session {
+  id               String        @id @default(uuid())
+  practicumClassId String        @map("practicum_class_id")
+  sessionNumber    Int           @map("session_number")
+  title            String?
+  description      String?
+  date             DateTime?     @db.Date
+  startTime        String?       @map("start_time") // "08:00"
+  endTime          String?       @map("end_time")   // "10:00"
+  status           SessionStatus @default(SCHEDULED)
+  assistantNotes   String?       @map("assistant_notes")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  practicumClass PracticumClass    @relation(fields: [practicumClassId], references: [id], onDelete: Cascade)
+  materials      SessionMaterial[]
+  assignments    Assignment[]
+  attendances    Attendance[]
+  grades         Grade[]
+
+  @@unique([practicumClassId, sessionNumber])
+  @@index([practicumClassId])
+  @@map("sessions")
+}
+
+/// A file/material attached to a session (module PDF, slides, etc.)
+model SessionMaterial {
+  id         String   @id @default(uuid())
+  sessionId  String   @map("session_id")
+  title      String
+  fileName   String   @map("file_name")
+  filePath   String   @map("file_path")
+  fileSize   BigInt   @map("file_size") // in bytes
+  fileType   String   @map("file_type") // MIME type
+  uploadedBy String   @map("uploaded_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  session  Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  uploader User    @relation("MaterialUploader", fields: [uploadedBy], references: [id], onDelete: Restrict)
+
+  @@index([sessionId])
+  @@map("session_materials")
+}
+
+/// Defines a grading component for a practicum (e.g., "Quiz 20%")
+model GradingComponent {
+  id                String            @id @default(uuid())
+  practicumId       String            @map("practicum_id")
+  name              String            // e.g., "Quiz", "Lab Report"
+  weight            Decimal           @db.Decimal(5, 4) // e.g., 0.2000 for 20%
+  order             Int
+  isPerSession      Boolean           @default(false) @map("is_per_session")
+  aggregationMethod AggregationMethod @default(AVERAGE) @map("aggregation_method")
+  maxScore          Decimal           @default(100) @db.Decimal(5, 2) @map("max_score")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  // Relations
+  practicum Practicum @relation(fields: [practicumId], references: [id], onDelete: Cascade)
+  grades    Grade[]
+
+  @@index([practicumId])
+  @@map("grading_components")
+}
+
+/// Maps final numeric scores to letter grades for a practicum
+model GradeLetterMapping {
+  id          String  @id @default(uuid())
+  practicumId String  @map("practicum_id")
+  letter      String  // e.g., "A", "B+"
+  minScore    Decimal @db.Decimal(5, 2) @map("min_score")
+  maxScore    Decimal @db.Decimal(5, 2) @map("max_score")
+  gradePoint  Decimal? @db.Decimal(3, 2) @map("grade_point") // e.g., 4.00
+  order       Int
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  practicum Practicum @relation(fields: [practicumId], references: [id], onDelete: Cascade)
+
+  @@index([practicumId])
+  @@map("grade_letter_mappings")
+}
+
+/// Links a student to a practicum class (enrollment)
+model StudentEnrollment {
+  id               String           @id @default(uuid())
+  studentId        String           @map("student_id")
+  practicumClassId String           @map("practicum_class_id")
+  status           EnrollmentStatus @default(ACTIVE)
+  enrolledAt       DateTime         @default(now()) @map("enrolled_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  student        User           @relation("StudentEnrollment", fields: [studentId], references: [id], onDelete: Restrict)
+  practicumClass PracticumClass @relation(fields: [practicumClassId], references: [id], onDelete: Cascade)
+  grades         Grade[]
+  attendances    Attendance[]
+  submissions    Submission[]
+  publishedGrade PublishedGrade?
+
+  @@unique([studentId, practicumClassId])
+  @@index([studentId])
+  @@index([practicumClassId])
+  @@map("student_enrollments")
+}
+
+/// Links an assistant to a practicum class (assignment)
+model AssistantAssignment {
+  id               String   @id @default(uuid())
+  assistantId      String   @map("assistant_id")
+  practicumClassId String   @map("practicum_class_id")
+  assignedAt       DateTime @default(now()) @map("assigned_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  assistant      User           @relation("AssistantAssignment", fields: [assistantId], references: [id], onDelete: Restrict)
+  practicumClass PracticumClass @relation(fields: [practicumClassId], references: [id], onDelete: Cascade)
+
+  @@unique([assistantId, practicumClassId])
+  @@index([assistantId])
+  @@index([practicumClassId])
+  @@map("assistant_assignments")
+}
+
+/// An assignment/task that students must complete
+model Assignment {
+  id                    String          @id @default(uuid())
+  practicumId           String          @map("practicum_id")
+  sessionId             String?         @map("session_id") // null = practicum-level assignment
+  title                 String
+  description           String?
+  type                  AssignmentType
+  deadline              DateTime?
+  latePenaltyPercentage Decimal?        @db.Decimal(5, 2) @map("late_penalty_percentage")
+  latePenaltyUnit       LatePenaltyUnit? @map("late_penalty_unit")
+  maxLatePenalty        Decimal?        @db.Decimal(5, 2) @map("max_late_penalty")
+  maxFileSizeMb         Int             @default(25) @map("max_file_size_mb")
+  allowedFileTypes      String[]        @default(["pdf", "docx"]) @map("allowed_file_types")
+  createdAt             DateTime        @default(now()) @map("created_at")
+  updatedAt             DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  practicum   Practicum    @relation(fields: [practicumId], references: [id], onDelete: Cascade)
+  session     Session?     @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  submissions Submission[]
+
+  @@index([practicumId])
+  @@index([sessionId])
+  @@index([deadline])
+  @@map("assignments")
+}
+
+/// A student's submission for an assignment
+model Submission {
+  id                  String           @id @default(uuid())
+  assignmentId        String           @map("assignment_id")
+  studentEnrollmentId String           @map("student_enrollment_id")
+  status              SubmissionStatus @default(DRAFT)
+  submittedAt         DateTime?        @map("submitted_at")
+  reviewedAt          DateTime?        @map("reviewed_at")
+  reviewedBy          String?          @map("reviewed_by")
+  reviewNotes         String?          @map("review_notes")
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  assignment        Assignment          @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  studentEnrollment StudentEnrollment   @relation(fields: [studentEnrollmentId], references: [id], onDelete: Cascade)
+  reviewer          User?               @relation("ReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  versions          SubmissionVersion[]
+
+  @@unique([assignmentId, studentEnrollmentId])
+  @@index([assignmentId])
+  @@index([studentEnrollmentId])
+  @@index([status])
+  @@map("submissions")
+}
+
+/// A specific version of a submitted file
+model SubmissionVersion {
+  id            String   @id @default(uuid())
+  submissionId  String   @map("submission_id")
+  versionNumber Int      @map("version_number")
+  fileName      String   @map("file_name")
+  filePath      String   @map("file_path")
+  fileSize      BigInt   @map("file_size")
+  fileType      String   @map("file_type") // MIME type
+  revisionNotes String?  @map("revision_notes")
+  uploadedBy    String   @map("uploaded_by")
+  uploadedAt    DateTime @default(now()) @map("uploaded_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // Relations
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  uploader   User       @relation("UploadedBy", fields: [uploadedBy], references: [id], onDelete: Restrict)
+
+  @@unique([submissionId, versionNumber])
+  @@index([submissionId])
+  @@map("submission_versions")
+}
+
+/// A grade entry for a student on a specific grading component
+model Grade {
+  id                  String   @id @default(uuid())
+  studentEnrollmentId String   @map("student_enrollment_id")
+  gradingComponentId  String   @map("grading_component_id")
+  sessionId           String?  @map("session_id") // null for non-per-session grades
+  score               Decimal  @db.Decimal(5, 2)
+  feedback            String?
+  gradedBy            String   @map("graded_by")
+  gradedAt            DateTime @default(now()) @map("graded_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  studentEnrollment StudentEnrollment @relation(fields: [studentEnrollmentId], references: [id], onDelete: Cascade)
+  gradingComponent  GradingComponent  @relation(fields: [gradingComponentId], references: [id], onDelete: Cascade)
+  session           Session?          @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  grader            User              @relation("GradedBy", fields: [gradedBy], references: [id], onDelete: Restrict)
+
+  @@unique([studentEnrollmentId, gradingComponentId, sessionId])
+  @@index([studentEnrollmentId])
+  @@index([gradingComponentId])
+  @@index([sessionId])
+  @@map("grades")
+}
+
+/// Attendance record for a student in a session
+model Attendance {
+  id                  String           @id @default(uuid())
+  sessionId           String           @map("session_id")
+  studentEnrollmentId String           @map("student_enrollment_id")
+  status              AttendanceStatus
+  checkInTime         DateTime?        @map("check_in_time")
+  notes               String?
+  recordedBy          String           @map("recorded_by")
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  session           Session           @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  studentEnrollment StudentEnrollment @relation(fields: [studentEnrollmentId], references: [id], onDelete: Cascade)
+  recorder          User              @relation("RecordedBy", fields: [recordedBy], references: [id], onDelete: Restrict)
+
+  @@unique([sessionId, studentEnrollmentId])
+  @@index([sessionId])
+  @@index([studentEnrollmentId])
+  @@map("attendances")
+}
+
+/// Published final grade for a student enrollment
+model PublishedGrade {
+  id                  String   @id @default(uuid())
+  studentEnrollmentId String   @unique @map("student_enrollment_id")
+  finalScore          Decimal  @db.Decimal(5, 2) @map("final_score")
+  letterGrade         String?  @map("letter_grade")
+  gradePoint          Decimal? @db.Decimal(3, 2) @map("grade_point")
+  publishedBy         String   @map("published_by")
+  publishedAt         DateTime @default(now()) @map("published_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  studentEnrollment StudentEnrollment @relation(fields: [studentEnrollmentId], references: [id], onDelete: Cascade)
+  publisher         User              @relation("GradePublisher", fields: [publishedBy], references: [id], onDelete: Restrict)
+
+  @@map("published_grades")
+}
+
+/// Announcement posted by Lab Admin
+model Announcement {
+  id           String               @id @default(uuid())
+  laboratoryId String               @map("laboratory_id")
+  practicumId  String?              @map("practicum_id") // null = lab-wide
+  title        String
+  content      String
+  priority     AnnouncementPriority @default(NORMAL)
+  publishedBy  String               @map("published_by")
+  publishedAt  DateTime             @default(now()) @map("published_at")
+  isPinned     Boolean              @default(false) @map("is_pinned")
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @updatedAt @map("updated_at")
+
+  // Relations
+  laboratory Laboratory @relation("LabAnnouncement", fields: [laboratoryId], references: [id], onDelete: Cascade)
+  practicum  Practicum? @relation("PracticumAnnouncement", fields: [practicumId], references: [id], onDelete: SetNull)
+  publisher  User       @relation("AnnouncementPublisher", fields: [publishedBy], references: [id], onDelete: Restrict)
+
+  @@index([laboratoryId])
+  @@index([practicumId])
+  @@index([publishedAt])
+  @@map("announcements")
+}
+
+/// In-app notification for a user
+model Notification {
+  id            String           @id @default(uuid())
+  userId        String           @map("user_id")
+  title         String
+  message       String
+  type          NotificationType
+  referenceType String?          @map("reference_type") // e.g., "announcement", "grade"
+  referenceId   String?          @map("reference_id")
+  isRead        Boolean          @default(false) @map("is_read")
+  readAt        DateTime?        @map("read_at")
+  createdAt     DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+/// Append-only audit log for tracking important actions
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  action     String   // e.g., "USER_LOGIN", "GRADE_MODIFIED"
+  entityType String   @map("entity_type") // e.g., "user", "grade"
+  entityId   String?  @map("entity_id")
+  oldValues  Json?    @map("old_values")
+  newValues  Json?    @map("new_values")
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+/// Key-value system settings managed by System Admin
+model SystemSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       Json
+  description String?
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  updater User? @relation("SettingUpdater", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@map("system_settings")
+}
